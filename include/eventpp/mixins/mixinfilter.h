@@ -14,66 +14,58 @@
 #ifndef MIXINFILTER_H_713231680355
 #define MIXINFILTER_H_713231680355
 
+#include <functional>
+#include <type_traits>
+
 #include "../callbacklist.h"
 #include "../internal/typeutil_i.h"
 
-#include <functional>
-#include <type_traits>
 
 namespace eventpp {
 
 template <typename Base>
-class MixinFilter : public Base
-{
-private:
-	using super = Base;
+class MixinFilter : public Base {
+ private:
+  using super = Base;
 
-	using BoolReferencePrototype = typename internal_::ReplaceReturnType<
-		typename internal_::TransformArguments<
-			typename super::Prototype,
-			std::add_lvalue_reference
-		>::Type,
-		bool
-	>::Type;
+  using BoolReferencePrototype = typename internal_::ReplaceReturnType<
+      typename internal_::TransformArguments<typename super::Prototype,
+                                             std::add_lvalue_reference>::Type,
+      bool>::Type;
 
-	using Filter = std::function<BoolReferencePrototype>;
-	using FilterList = CallbackList<BoolReferencePrototype>;
+  using Filter = std::function<BoolReferencePrototype>;
+  using FilterList = CallbackList<BoolReferencePrototype>;
 
-public:
-	using FilterHandle = typename FilterList::Handle;
+ public:
+  using FilterHandle = typename FilterList::Handle;
 
-public:
-	FilterHandle appendFilter(const Filter & filter)
-	{
-		return filterList.append(filter);
-	}
+ public:
+  FilterHandle appendFilter(const Filter& filter) {
+    return filterList.append(filter);
+  }
 
-	bool removeFilter(const FilterHandle & filterHandle)
-	{
-		return filterList.remove(filterHandle);
-	}
+  bool removeFilter(const FilterHandle& filterHandle) {
+    return filterList.remove(filterHandle);
+  }
 
-	template <typename ...Args>
-	bool mixinBeforeDispatch(Args && ...args) const {
-		if(! filterList.empty()) {
-			if(! filterList.forEachIf([&args...](typename FilterList::Callback & callback) {
-					return callback(args...);
-				})
-			) {
-				return false;
-			}
-		}
+  template <typename... Args>
+  bool mixinBeforeDispatch(Args&&... args) const {
+    if (!filterList.empty()) {
+      if (!filterList.forEachIf(
+              [&args...](typename FilterList::Callback& callback) {
+                return callback(args...);
+              })) {
+        return false;
+      }
+    }
 
-		return true;
-	}
+    return true;
+  }
 
-private:
-	FilterList filterList;
+ private:
+  FilterList filterList;
 };
 
-
-} //namespace eventpp
-
+}  // namespace eventpp
 
 #endif
-

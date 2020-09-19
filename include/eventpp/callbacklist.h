@@ -14,9 +14,6 @@
 #ifndef CALLBACKLIST_H_588722158669
 #define CALLBACKLIST_H_588722158669
 
-#include "eventpolicies.h"
-#include "internal/typeutil_i.h"
-
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -24,409 +21,360 @@
 #include <mutex>
 #include <utility>
 
+#include "eventpolicies.h"
+#include "internal/typeutil_i.h"
+
+
 namespace eventpp {
 
 namespace internal_ {
 
-template <
-	typename Prototype,
-	typename PoliciesType
->
+template <typename Prototype, typename PoliciesType>
 class CallbackListBase;
 
-template <
-	typename PoliciesType,
-	typename ReturnType, typename ...Args
->
-class CallbackListBase<
-	ReturnType (Args...),
-	PoliciesType
->
-{
-private:
-	using Policies = PoliciesType;
+template <typename PoliciesType, typename ReturnType, typename... Args>
+class CallbackListBase<ReturnType(Args...), PoliciesType> {
+ private:
+  using Policies = PoliciesType;
 
-	using Threading = typename SelectThreading<Policies, HasTypeThreading<Policies>::value>::Type;
+  using Threading =
+      typename SelectThreading<Policies,
+                               HasTypeThreading<Policies>::value>::Type;
 
-	using Callback_ = typename SelectCallback<
-		Policies,
-		HasTypeCallback<Policies>::value,
-		std::function<ReturnType (Args...)>
-	>::Type;
+  using Callback_ =
+      typename SelectCallback<Policies, HasTypeCallback<Policies>::value,
+                              std::function<ReturnType(Args...)> >::Type;
 
-	using CanContinueInvoking = typename SelectCanContinueInvoking<
-		Policies, HasFunctionCanContinueInvoking<Policies, Args...>::value
-	>::Type;
+  using CanContinueInvoking = typename SelectCanContinueInvoking<
+      Policies, HasFunctionCanContinueInvoking<Policies, Args...>::value>::Type;
 
-	struct Node;
-	using NodePtr = std::shared_ptr<Node>;
+  struct Node;
+  using NodePtr = std::shared_ptr<Node>;
 
-	struct Node
-	{
-		using Counter = unsigned int;
+  struct Node {
+    using Counter = unsigned int;
 
-		Node(const Callback_ & callback, const Counter counter)
-			: callback(callback), counter(counter)
-		{
-		}
+    Node(const Callback_ &callback, const Counter counter)
+        : callback(callback), counter(counter) {}
 
-		NodePtr previous;
-		NodePtr next;
-		Callback_ callback;
-		Counter counter;
-	};
+    NodePtr previous;
+    NodePtr next;
+    Callback_ callback;
+    Counter counter;
+  };
 
-	class Handle_ : public std::weak_ptr<Node>
-	{
-	private:
-		using super = std::weak_ptr<Node>;
+  class Handle_ : public std::weak_ptr<Node> {
+   private:
+    using super = std::weak_ptr<Node>;
 
-	public:
-		using super::super;
+   public:
+    using super::super;
 
-		operator bool () const noexcept {
-			return ! this->expired();
-		}
-	};
+    operator bool() const noexcept { return !this->expired(); }
+  };
 
-	using Counter = typename Node::Counter;
-	enum : Counter {
-		removedCounter = 0
-	};
+  using Counter = typename Node::Counter;
+  enum : Counter { removedCounter = 0 };
 
-public:
-	using Callback = Callback_;
-	using Handle = Handle_;
-	using Mutex = typename Threading::Mutex;
+ public:
+  using Callback = Callback_;
+  using Handle = Handle_;
+  using Mutex = typename Threading::Mutex;
 
-public:
-	CallbackListBase() noexcept
-		:
-			head(),
-			tail(),
-			mutex(),
-			currentCounter(0)
-	{
-	}
+ public:
+  CallbackListBase() noexcept : head(), tail(), mutex(), currentCounter(0) {}
 
-	CallbackListBase(const CallbackListBase & other)
-		: CallbackListBase()
-	{
-		cloneFrom(other.head);
-	}
+  CallbackListBase(const CallbackListBase &other) : CallbackListBase() {
+    cloneFrom(other.head);
+  }
 
-	CallbackListBase(CallbackListBase && other) noexcept
-		: CallbackListBase()
-	{
-		swap(other);
-	}
+  CallbackListBase(CallbackListBase &&other) noexcept : CallbackListBase() {
+    swap(other);
+  }
 
-	// If we use pass by value idiom and omit the 'this' check,
-	// when assigning to self there is a deep copy which is inefficient.
-	CallbackListBase & operator = (const CallbackListBase & other) {
-		if(this != &other) {
-			CallbackListBase copied(other);
-			swap(copied);
-		}
-		return *this;
-	}
+  // If we use pass by value idiom and omit the 'this' check,
+  // when assigning to self there is a deep copy which is inefficient.
+  CallbackListBase &operator=(const CallbackListBase &other) {
+    if (this != &other) {
+      CallbackListBase copied(other);
+      swap(copied);
+    }
+    return *this;
+  }
 
-	CallbackListBase & operator = (CallbackListBase && other) noexcept {
-		if(this != &other) {
-			head = std::move(other.head);
-			tail = std::move(other.tail);
-			currentCounter = other.currentCounter.load();
-		}
-		return *this;
-	}
+  CallbackListBase &operator=(CallbackListBase &&other) noexcept {
+    if (this != &other) {
+      head = std::move(other.head);
+      tail = std::move(other.tail);
+      currentCounter = other.currentCounter.load();
+    }
+    return *this;
+  }
 
-	~CallbackListBase()	{
-		// Don't lock mutex here since it may throw exception
+  ~CallbackListBase() {
+    // Don't lock mutex here since it may throw exception
 
-		NodePtr node = head;
-		head.reset();
-		while(node) {
-			NodePtr next = node->next;
-			node->previous.reset();
-			node->next.reset();
-			node = next;
-		}
-		node.reset();
-	}
-	
-	void swap(CallbackListBase & other) noexcept {
-		using std::swap;
-		
-		swap(head, other.head);
-		swap(tail, other.tail);
+    NodePtr node = head;
+    head.reset();
+    while (node) {
+      NodePtr next = node->next;
+      node->previous.reset();
+      node->next.reset();
+      node = next;
+    }
+    node.reset();
+  }
 
-		const auto value = currentCounter.load();
-		currentCounter.exchange(other.currentCounter.load());
-		other.currentCounter.exchange(value);
-	}
+  void swap(CallbackListBase &other) noexcept {
+    using std::swap;
 
-	bool empty() const {
-		// Don't lock the mutex for performance reason.
-		// !head still works even when the underlying raw pointer is garbled (for other thread is writting to head)
-		// And empty() doesn't guarantee the list is still empty after the function returned.
-		//std::lock_guard<Mutex> lockGuard(mutex);
+    swap(head, other.head);
+    swap(tail, other.tail);
 
-		return ! head;
-	}
+    const auto value = currentCounter.load();
+    currentCounter.exchange(other.currentCounter.load());
+    other.currentCounter.exchange(value);
+  }
 
-	operator bool() const {
-		return ! empty();
-	}
+  bool empty() const {
+    // Don't lock the mutex for performance reason.
+    // !head still works even when the underlying raw pointer is garbled (for
+    // other thread is writting to head) And empty() doesn't guarantee the list
+    // is still empty after the function returned.
+    // std::lock_guard<Mutex> lockGuard(mutex);
 
-	Handle append(const Callback & callback)
-	{
-		NodePtr node(doAllocateNode(callback));
+    return !head;
+  }
 
-		std::lock_guard<Mutex> lockGuard(mutex);
+  operator bool() const { return !empty(); }
 
-		if(head) {
-			node->previous = tail;
-			tail->next = node;
-			tail = node;
-		}
-		else {
-			head = node;
-			tail = node;
-		}
+  Handle append(const Callback &callback) {
+    NodePtr node(doAllocateNode(callback));
 
-		return Handle(node);
-	}
+    std::lock_guard<Mutex> lockGuard(mutex);
 
-	Handle prepend(const Callback & callback)
-	{
-		NodePtr node(doAllocateNode(callback));
+    if (head) {
+      node->previous = tail;
+      tail->next = node;
+      tail = node;
+    } else {
+      head = node;
+      tail = node;
+    }
 
-		std::lock_guard<Mutex> lockGuard(mutex);
+    return Handle(node);
+  }
 
-		if(head) {
-			node->next = head;
-			head->previous = node;
-			head = node;
-		}
-		else {
-			head = node;
-			tail = node;
-		}
+  Handle prepend(const Callback &callback) {
+    NodePtr node(doAllocateNode(callback));
 
-		return Handle(node);
-	}
+    std::lock_guard<Mutex> lockGuard(mutex);
 
-	Handle insert(const Callback & callback, const Handle & before)
-	{
-		NodePtr beforeNode = before.lock();
-		if(beforeNode) {
-			NodePtr node(doAllocateNode(callback));
+    if (head) {
+      node->next = head;
+      head->previous = node;
+      head = node;
+    } else {
+      head = node;
+      tail = node;
+    }
 
-			std::lock_guard<Mutex> lockGuard(mutex);
+    return Handle(node);
+  }
 
-			doInsert(node, beforeNode);
+  Handle insert(const Callback &callback, const Handle &before) {
+    NodePtr beforeNode = before.lock();
+    if (beforeNode) {
+      NodePtr node(doAllocateNode(callback));
 
-			return Handle(node);
-		}
+      std::lock_guard<Mutex> lockGuard(mutex);
 
-		return append(callback);
-	}
+      doInsert(node, beforeNode);
 
-	bool remove(const Handle & handle)
-	{
-		std::lock_guard<Mutex> lockGuard(mutex);
-		auto node = handle.lock();
-		if(node) {
-			doFreeNode(node);
-			return true;
-		}
+      return Handle(node);
+    }
 
-		return false;
-	}
+    return append(callback);
+  }
 
-	template <typename Func>
-	void forEach(Func && func) const
-	{
-		doForEachIf([&func, this](NodePtr & node) -> bool {
-			doForEachInvoke<void>(func, node);
-			return true;
-		});
-	}
+  bool remove(const Handle &handle) {
+    std::lock_guard<Mutex> lockGuard(mutex);
+    auto node = handle.lock();
+    if (node) {
+      doFreeNode(node);
+      return true;
+    }
 
-	template <typename Func>
-	bool forEachIf(Func && func) const
-	{
-		return doForEachIf([&func, this](NodePtr & node) -> bool {
-			return doForEachInvoke<bool>(func, node);
-		});
-	}
+    return false;
+  }
 
-	void operator() (Args ...args) const
-	{
-		forEachIf([&args...](Callback & callback) -> bool {
-			callback(args...);
-			return CanContinueInvoking::canContinueInvoking(args...);
-		});
-	}
+  template <typename Func>
+  void forEach(Func &&func) const {
+    doForEachIf([&func, this](NodePtr &node) -> bool {
+      doForEachInvoke<void>(func, node);
+      return true;
+    });
+  }
 
-private:
-	template <typename F>
-	bool doForEachIf(F && f) const
-	{
-		NodePtr node;
+  template <typename Func>
+  bool forEachIf(Func &&func) const {
+    return doForEachIf([&func, this](NodePtr &node) -> bool {
+      return doForEachInvoke<bool>(func, node);
+    });
+  }
 
-		{
-			std::lock_guard<Mutex> lockGuard(mutex);
-			node = head;
-		}
+  void operator()(Args... args) const {
+    forEachIf([&args...](Callback &callback) -> bool {
+      callback(args...);
+      return CanContinueInvoking::canContinueInvoking(args...);
+    });
+  }
 
-		const Counter counter = currentCounter.load(std::memory_order_acquire);
+ private:
+  template <typename F>
+  bool doForEachIf(F &&f) const {
+    NodePtr node;
 
-		while(node) {
-			if(node->counter != removedCounter && counter >= node->counter) {
-				if(! f(node)) {
-					return false;
-				}
-			}
+    {
+      std::lock_guard<Mutex> lockGuard(mutex);
+      node = head;
+    }
 
-			{
-				std::lock_guard<Mutex> lockGuard(mutex);
-				node = node->next;
-			}
-		}
+    const Counter counter = currentCounter.load(std::memory_order_acquire);
 
-		return true;
-	}
+    while (node) {
+      if (node->counter != removedCounter && counter >= node->counter) {
+        if (!f(node)) {
+          return false;
+        }
+      }
 
-	template <typename RT, typename Func>
-	auto doForEachInvoke(Func && func, NodePtr & node) const
-		-> typename std::enable_if<CanInvoke<Func, Handle, Callback &>::value, RT>::type
-	{
-		return func(Handle(node), node->callback);
-	}
+      {
+        std::lock_guard<Mutex> lockGuard(mutex);
+        node = node->next;
+      }
+    }
 
-	template <typename RT, typename Func>
-	auto doForEachInvoke(Func && func, NodePtr & node) const
-		-> typename std::enable_if<CanInvoke<Func, Callback &>::value, RT>::type
-	{
-		return func(node->callback);
-	}
+    return true;
+  }
 
-	void doInsert(NodePtr & node, NodePtr & beforeNode)
-	{
-		node->previous = beforeNode->previous;
-		node->next = beforeNode;
-		if(beforeNode->previous) {
-			beforeNode->previous->next = node;
-		}
-		beforeNode->previous = node;
+  template <typename RT, typename Func>
+  auto doForEachInvoke(Func &&func, NodePtr &node) const ->
+      typename std::enable_if<CanInvoke<Func, Handle, Callback &>::value,
+                              RT>::type {
+    return func(Handle(node), node->callback);
+  }
 
-		if(beforeNode == head) {
-			head = node;
-		}
-	}
-	
-	NodePtr doAllocateNode(const Callback & callback)
-	{
-		return std::make_shared<Node>(callback, getNextCounter());
-	}
-	
-	void doFreeNode(NodePtr & node)
-	{
-		if(node->next) {
-			node->next->previous = node->previous;
-		}
-		if(node->previous) {
-			node->previous->next = node->next;
-		}
+  template <typename RT, typename Func>
+  auto doForEachInvoke(Func &&func, NodePtr &node) const ->
+      typename std::enable_if<CanInvoke<Func, Callback &>::value, RT>::type {
+    return func(node->callback);
+  }
 
-		if(head == node) {
-			head = node->next;
-		}
-		if(tail == node) {
-			tail = node->previous;
-		}
+  void doInsert(NodePtr &node, NodePtr &beforeNode) {
+    node->previous = beforeNode->previous;
+    node->next = beforeNode;
+    if (beforeNode->previous) {
+      beforeNode->previous->next = node;
+    }
+    beforeNode->previous = node;
 
-		// Mark it as deleted
-		node->counter = removedCounter;
+    if (beforeNode == head) {
+      head = node;
+    }
+  }
 
-		// don't modify node->previous or node->next
-		// because node may be still used in a loop.
-	}
+  NodePtr doAllocateNode(const Callback &callback) {
+    return std::make_shared<Node>(callback, getNextCounter());
+  }
 
-	Counter getNextCounter()
-	{
-		Counter result = ++currentCounter;;
-		if(result == 0) { // overflow, let's reset all nodes' counters.
-			{
-				std::lock_guard<Mutex> lockGuard(mutex);
-				NodePtr node = head;
-				while(node) {
-					node->counter = 1;
-					node = node->next;
-				}
-			}
-			result = ++currentCounter;
-		}
+  void doFreeNode(NodePtr &node) {
+    if (node->next) {
+      node->next->previous = node->previous;
+    }
+    if (node->previous) {
+      node->previous->next = node->next;
+    }
 
-		return result;
-	}
-	
-	void cloneFrom(const NodePtr & fromHead) {
-		NodePtr fromNode(fromHead);
-		NodePtr node;
-		const Counter counter = getNextCounter();
-		while(fromNode) {
-			const NodePtr nextNode(std::make_shared<Node>(fromNode->callback, counter));
+    if (head == node) {
+      head = node->next;
+    }
+    if (tail == node) {
+      tail = node->previous;
+    }
 
-			nextNode->previous = node;
+    // Mark it as deleted
+    node->counter = removedCounter;
 
-			if(node) {
-				node->next = nextNode;
-			}
-			else {
-				node = nextNode;
-				head = node;
-			}
-		
-			node = nextNode;
-			fromNode = fromNode->next;
-		}
+    // don't modify node->previous or node->next
+    // because node may be still used in a loop.
+  }
 
-		tail = node;
-	}
+  Counter getNextCounter() {
+    Counter result = ++currentCounter;
+    ;
+    if (result == 0) {  // overflow, let's reset all nodes' counters.
+      {
+        std::lock_guard<Mutex> lockGuard(mutex);
+        NodePtr node = head;
+        while (node) {
+          node->counter = 1;
+          node = node->next;
+        }
+      }
+      result = ++currentCounter;
+    }
 
-private:
-	NodePtr head;
-	NodePtr tail;
-	mutable Mutex mutex;
-	typename Threading::template Atomic<Counter> currentCounter;
+    return result;
+  }
 
+  void cloneFrom(const NodePtr &fromHead) {
+    NodePtr fromNode(fromHead);
+    NodePtr node;
+    const Counter counter = getNextCounter();
+    while (fromNode) {
+      const NodePtr nextNode(
+          std::make_shared<Node>(fromNode->callback, counter));
+
+      nextNode->previous = node;
+
+      if (node) {
+        node->next = nextNode;
+      } else {
+        node = nextNode;
+        head = node;
+      }
+
+      node = nextNode;
+      fromNode = fromNode->next;
+    }
+
+    tail = node;
+  }
+
+ private:
+  NodePtr head;
+  NodePtr tail;
+  mutable Mutex mutex;
+  typename Threading::template Atomic<Counter> currentCounter;
 };
 
+}  // namespace internal_
 
-} //namespace internal_
+template <typename Prototype_, typename Policies_ = DefaultPolicies>
+class CallbackList : public internal_::CallbackListBase<Prototype_, Policies_>,
+                     public TagCallbackList {
+ private:
+  using super = internal_::CallbackListBase<Prototype_, Policies_>;
 
+ public:
+  using super::super;
 
-template <
-	typename Prototype_,
-	typename Policies_ = DefaultPolicies
->
-class CallbackList : public internal_::CallbackListBase<Prototype_, Policies_>, public TagCallbackList
-{
-private:
-	using super = internal_::CallbackListBase<Prototype_, Policies_>;
-	
-public:
-	using super::super;
-	
-	friend void swap(CallbackList & first, CallbackList & second) noexcept {
-		first.swap(second);
-	}
+  friend void swap(CallbackList &first, CallbackList &second) noexcept {
+    first.swap(second);
+  }
 };
 
-
-} //namespace eventpp
-
+}  // namespace eventpp
 
 #endif
